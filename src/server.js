@@ -9,7 +9,7 @@ const app = express();
 
 /**
  * CORS configuration
- * - FRONTEND_URL should be set on your host (Render) to: https://stretch-front-end.vercel.app
+ * - FRONTEND_URL should be set on your host (Render) to: https://stretch-frontend.vercel.app
  *   or to a comma-separated list of allowed origins.
  * - We echo back the Origin only when it is in the allowed list.
  * - credentials: true allows cookies to be sent (if you later set cookies).
@@ -145,11 +145,24 @@ app.post('/api/auth/login', async (req, res) => {
 
 /** --- sessions --- */
 
-// list sessions
+// list sessions (now includes bookedSeats array for each session)
 app.get('/api/sessions', async (req, res) => {
   try {
-    const r = await db.query('SELECT id, title, description, session_date, start_time, duration_minutes, capacity FROM sessions ORDER BY session_date, start_time');
-    return res.json(r.rows);
+    const r = await db.query(
+      'SELECT id, title, description, session_date, start_time, duration_minutes, capacity FROM sessions ORDER BY session_date, start_time'
+    );
+    const sessions = r.rows;
+
+    // fetch booked seat numbers for each session in parallel
+    const sessionsWithSeats = await Promise.all(
+      sessions.map(async (s) => {
+        const bs = await db.query('SELECT seat_number FROM bookings WHERE session_id = $1', [s.id]);
+        const bookedSeats = bs.rows.map(r2 => r2.seat_number);
+        return { ...s, bookedSeats };
+      })
+    );
+
+    return res.json(sessionsWithSeats);
   } catch (err) {
     console.error('fetch sessions', err);
     return res.status(500).json({ message: 'Server error' });
