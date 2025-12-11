@@ -36,7 +36,7 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
-app.options('*', cors(corsOptions)); // handle preflight
+app.options('/*', cors(corsOptions)); // handle preflight
 app.use(express.json());
 
 const JWT_SECRET = process.env.JWT_SECRET || 'devsecret';
