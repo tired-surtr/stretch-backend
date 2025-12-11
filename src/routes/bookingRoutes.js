@@ -3,7 +3,17 @@ const pool = require("../db");
 
 const router = express.Router();
 
-// POST /api/bookings - book a single seat for a session
+/**
+ * POST /api/bookings
+ * Body:
+ *  - session_id (required)
+ *  - seat_number (optional)  <-- if omitted, backend will auto-assign the lowest free seat
+ *
+ * Response:
+ *  - 201 { status: "CONFIRMED", booking: {...} }
+ *  - 409 { status: "FAILED", message: "No seats available" }  (or "Seat already booked")
+ */
+
 router.post("/", async (req, res) => {
   const { session_id, seat_number } = req.body;
 
@@ -12,12 +22,11 @@ router.post("/", async (req, res) => {
   }
 
   try {
-    // Use a transaction
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
 
-      // Optional: lock session row to be extra safe
+      // Lock the session row
       const sessionResult = await client.query(
         "SELECT id, capacity FROM sessions WHERE id = $1 FOR UPDATE",
         [session_id]
@@ -34,11 +43,31 @@ router.post("/", async (req, res) => {
       if (seat_number < 1 || seat_number > session.capacity) {
         await client.query("ROLLBACK");
         client.release();
-        return res.status(400).json({ message: "Invalid seat number for this session" });
+        return res.status(400).json({ message: "Invalid seat number" });
       }
 
-      // Try to insert booking
-      const bookingResult = await client.query(
+      // Lock booked seats
+      const bookedResult = await client.query(
+        `SELECT seat_number FROM bookings
+         WHERE session_id = $1
+           AND status IN ('PENDING','CONFIRMED')
+         FOR UPDATE`,
+        [session_id]
+      );
+
+      const occupied = new Set(bookedResult.rows.map((r) => r.seat_number));
+
+      if (occupied.has(seat_number)) {
+        await client.query("ROLLBACK");
+        client.release();
+        return res.status(409).json({
+          status: "FAILED",
+          message: "Seat already booked",
+        });
+      }
+
+      // Insert booking
+      const insertResult = await client.query(
         `INSERT INTO bookings (session_id, seat_number, status)
          VALUES ($1, $2, 'CONFIRMED')
          RETURNING *`,
@@ -50,13 +79,12 @@ router.post("/", async (req, res) => {
 
       return res.status(201).json({
         status: "CONFIRMED",
-        booking: bookingResult.rows[0],
+        booking: insertResult.rows[0],
       });
     } catch (err) {
       await client.query("ROLLBACK");
       client.release();
 
-      // Unique constraint violation => seat already taken
       if (err.code === "23505") {
         return res.status(409).json({
           status: "FAILED",
@@ -64,16 +92,17 @@ router.post("/", async (req, res) => {
         });
       }
 
-      console.error("Error creating booking:", err);
+      console.error("Booking error:", err);
       return res.status(500).json({ message: "Failed to create booking" });
     }
   } catch (err) {
-    console.error("Error acquiring client:", err);
+    console.error("DB connection error:", err);
     return res.status(500).json({ message: "Failed to acquire database connection" });
   }
 });
 
-// GET /api/bookings - optional: filter by session_id
+
+// GET bookings (keep existing)
 router.get("/", async (req, res) => {
   const { session_id } = req.query;
 
